@@ -1,7 +1,9 @@
-(ns probable-lamp.core
+(ns kangaroo.core
   (:require [clojure.string :as string]))
 
-; Represents an NFA state plus zero or one or two arrows exiting
+;TODO change name to barbara !!
+
+; possible node types
 (def ^:const ^:private END :end) ; no arrows out. FINAL state
 (def ^:const ^:private SPLIT :split) ; unlabeled arrows to out and out1 (if != NULL)
 (def ^:const ^:private LITERAL :literal) ; one arrow out. Only out is (checker %) is true
@@ -9,13 +11,73 @@
 ; HACK there be dragons !!
 (defn- mk-id [] (hash #()))
 
-(defn- name-it
-  "given a checker function and a state type return the unmangled function name"
-  [checker stype]
-  (cond (= stype END) "END"
-        (nil? checker) nil
-        :else (string/replace (second (re-find #"^.+\$(.+)\@.+$" (str checker)))
-                              #"\_QMARK\_" "?")))
+(defrecord node       [id pred out out1]) ; one arrow out. Only out is (checker %) is true
+(defrecord split-node [id out out1]) ; unlabeled arrows in out and out1 (if != NULL)
+
+(defrecord nfa      [fid nodes])
+(defrecord verdict  [ok? message])
+
+;; (def ^:const ^:private END (->node 0 nil nil nil))
+
+(defprotocol NfaPlugable "protocol definition required to convert a certain
+  type into an NFA"
+  (automat [object] "takes an object and wraps it in an NFA"))
+
+(defprotocol Mechanic "protocol for patching up nodes with dangling out*"
+  (connect [node id] "set a dangling out* in node to id"))
+
+(defprotocol Statement "protocol to compare a certain input against"
+  (holds? [object input] "check if the input holds against the object rules"))
+
+;; (defprotocol Judgment "protocol to judge whether the result of a Statement
+;;   holds or not"
+;;   (judge [result] "judge whether or not result is true or false"))
+
+;; (defprotocol Reporter "protocol for wrapping up the results of a failed statement"
+;;   (trace [result] "trace why did a judment failed based on source"))
+
+(extend-type nfa
+  NfaPlugable
+  (automat [object] object)
+  Statement
+  (holds? [object input] (->verdict false "FIXME"))) ;FIXME implement the whole NFA checking process here
+
+(extend-type node
+  NfaPlugable
+  (automat [object] (->nfa (:id object) :content {(:id object) object}))
+  Statement
+  (holds? [object input] (if ((:pred object) input)
+                           (->verdict true nil) ;FIXME make a named field and output that
+                           (->verdict false (str "Expected " (:pred object)
+                                                 " instead got: " input))))
+  Mechanic
+  (connect [object id] (if (nil? (:out object))
+                         {(:id object) (assoc object :out id)}
+                         {(:id object) object})))
+
+(extend-type split-node
+  Statement
+  (holds? [object input] nil)
+  Mechanic
+  (connect [object id] (if (nil? (:out1 object))
+                         {(:id object) (assoc object :out1 id)}
+                         {(:id object) object})))
+
+(extend-type clojure.lang.IFn
+  NfaPlugable
+  (automat [object] (automat (->node (mk-id) object nil nil))))
+
+(extend-type java.lang.Object
+  NfaPlugable
+  (automat [object] (automat (->node (mk-id) #(= % object) nil nil))))
+
+;; (defn- name-it
+;;   "given a checker function and a state type return the unmangled function name"
+;;   [checker stype]
+;;   (cond (= stype END) "END"
+;;         (nil? checker) nil
+;;         :else (string/replace (second (re-find #"^.+\$(.+)\@.+$" (str checker)))
+;;                               #"\_QMARK\_" "?")))
 
 (defn- state
   "an NFA state with eps transitions. flag is one of LITERAL, SPLIT or END.
@@ -23,7 +85,7 @@
   if the checker condition is true."
   ([checker] (state checker nil nil LITERAL))
   ([checker out out1 flag]
-   {:id (mk-id), :name (name-it checker flag)
+   {:id (mk-id),; :name (name-it checker flag)
     :type flag, :checker checker, :out out, :out1 out1}))
 
 ; A partially built NFA. ':start' is the id of the start state
@@ -107,7 +169,7 @@
   (if (= (:type stat) SPLIT)
       (into (follow-link (auto-content (:out stat)) auto-content)
             ;(follow-link auto-content)
-            (follow-link (auto-content (:out stat)) auto-content))
+            (follow-link (auto-content (:out1 stat)) auto-content))
       (hash-set (auto-content (:id stat)))))
 
 (defn- next-states
@@ -147,8 +209,8 @@
   (condp = error-type
     :extra (str "too many elements: " (str input))
     :missing (str "missing elements: \n Expected any of "
-                  (string/join ", " (map :name states)))
-    :mismatch (str "Expected any of: " (string/join ", " (map :name states))
+                  (string/join ", " (map #(str (:checker %))  states)))
+    :mismatch (str "Expected any of: " (string/join ", " (map #(str (:checker %)) states))
                    "; instead got: " (str input))))
 
 (defn- step
@@ -174,9 +236,6 @@
     (step final-machine input start-state)))
 
 (def foo (alt (rep+ string?) list? map?))
-;(def bar (cat foo (automaton (state nil nil nil END))))
-;foo
-;bar
 
 (exec foo '("hello" (a b) "world"))
 

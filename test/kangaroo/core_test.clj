@@ -1,6 +1,6 @@
-(ns probable-lamp.core-test
+(ns kangaroo.core-test
   (:require [clojure.test :refer :all]
-            [probable-lamp.core :refer :all]))
+            [kangaroo.core :refer :all]))
 
 (deftest a-test
   (testing "FIXME, I fail."
