@@ -87,7 +87,7 @@
   (->automat [object] (->automat (map->node {:id (mk-id) :pred #(= % object) :name (str object)}))))
 
 ;;  SINGLETON object
-(defonce ^:const ^:private END (map->node {:id 0 :name "THE END" :pred (fn [input] false)}))
+(defonce ^:const ^:private END (map->node {:id 0 :name "END" :pred (fn [input] false)}))
 
 ;; (defn- name-it
 ;;   "given a checker function and a state type return the unmangled function name"
@@ -147,8 +147,7 @@
                                                           (repeat (:id split))))})))
 
 ;; (defn and
-;;   ([object] object)
-;;   ([]
+;;   ([object object2]
 
 (defn- next-states
   "given a sequence of nodes (not split nodes) and a hash-map with all possible
@@ -189,22 +188,23 @@
 (defn- step
   [machine input states]
   (let [results (mapv #(judge % (first input)) states)
-        matches (keep-indexed #(when (holds? (get results %1)) %2)
-                              states)]
+        matches (keep-indexed #(when (holds? (get results %1)) %2) states)]
     (next-states matches (:nodes machine))))
 
 (defn- traverse
   "traverse the state machine step by step checking if the input given fulfills
   the any of the current sequence of states"
   [machine input states]
+  ;(Thread/sleep 10000)
   (if-let [todo (not-empty (step machine input states))]
     (if-let [result (stop? todo input)] result
       (recur machine (rest input) todo))
-    {:match false, :msg (str "nothing expected, instead got: " input)}))
+    (error :mismatch input states)))
+    ;{:match false, :msg (str "nothing expected, instead got: " input)}))
 
 (defn exec
   "compares the provided regular expression to the given input. returns a hash-map
-  with :match and :msg as the veredict of the match and an error message if the match
+  with :match and :msg as the verdict of the match and an error message if the match
   was not sucessfull."
   [auto input]
   (let [machine (cat auto END)
@@ -212,12 +212,14 @@
                             (:nodes machine)))]
     (traverse machine input starts)))
 
-(defn- ->viewer
-  [coll]
-  (clojure.walk/postwalk #(cond (record? %) (into {} %)
-                                (fn? %) (str %)
-                                :else %) coll))
-
-(def foo (alt (rep+ string?) list? map?))
-(->viewer (cat foo END))
+(def foo (cat (rep* string?) list? map?))
 (exec foo '("hello" (a b) "world"))
+
+;; (defn- ->viewer
+;;   [coll]
+;;   (clojure.walk/postwalk
+;;     #(cond (record? %) (into {} %)
+;;            (fn? %)     (str %)
+;;            :else %)     coll))
+
+;; (->viewer (cat foo END))
