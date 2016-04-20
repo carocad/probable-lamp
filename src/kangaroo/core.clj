@@ -44,21 +44,20 @@
   verdict
   (holds? [object] (:ok? object)))
 
+(declare exec)
 ;; a NonDeterministic Finite Automat with first node id fid and an integer
 ;; hash-map of nodes
 (defrecord nfa [fid nodes]
   NfaPlugable
   (->automat [object] object)
   Judment ;FIXME implement the whole NFA checking process here
-  (judge [object input] (map->verdict {:ok? false :msg "FIXME"})))
+  (judge [object input] (exec object input)))
 
 ;; an NFA state with (possible) eps transitions, a predicate to compare input against,
 ;; and two possible output states
 (defrecord node [id name pred out] ; one arrow out
   NfaPlugable
   (->automat [object] (map->nfa {:fid (:id object) :nodes (int-map (:id object) object)}))
-  Judment
-  (judge [object input] ((:pred object) input))
   Statement
   (holds? [object] object); no-op, return it as it is
   Bypasser ;; everything you want is here; no need to look for more ;)
@@ -80,11 +79,15 @@
                              (when-let [arrow (:out1 anode)]
                                (peep (get nodes arrow) nodes)))))
 
-(extend-protocol NfaPlugable
-  clojure.lang.IFn
-  (->automat [object] (->automat (map->node {:id (mk-id) :pred object :name (demunge (str object))})))
-  java.lang.Object
+(extend-type java.lang.Object
+  NfaPlugable
   (->automat [object] (->automat (map->node {:id (mk-id) :pred #(= % object) :name (str object)}))))
+
+(extend-type clojure.lang.IFn
+  Judment
+  (judge [object input] (object input))
+  NfaPlugable
+  (->automat [object] (->automat (map->node {:id (mk-id) :pred object :name (demunge (str object))}))))
 
 ;;  SINGLETON object
 (defonce ^:const ^:private END (map->node {:id 0 :name "END" :pred (fn [input] false)}))
@@ -146,8 +149,11 @@
                                              (map connect (vals (:nodes auto))
                                                           (repeat (:id split))))})))
 
-;; (defn and
-;;   ([object object2]
+(defn and ;; implemented as an NFA inside the NFA under construction
+  [object object2 & more]
+  (let [machine (reduce cat (cat object object2) more)
+        nest    (->node (mk-id) "FIXME" machine nil)]
+    (map->nfa {:fid (:id nest) :nodes (int-map (:id nest) nest)})))
 
 (defn- next-states
   "given a sequence of nodes (not split nodes) and a hash-map with all possible
@@ -178,16 +184,16 @@
         empty-input (empty? input)]
     (cond
       ;; too much input, not enough states
-      (clj-and end-found (not empty-input)) {:match false, :msg (error :extra input states)}
+      (clj-and end-found (not empty-input)) (->verdict false (error :extra input states))
       ;; success !
-      (clj-and end-found empty-input) {:match true, :msg nil}
+      (clj-and end-found empty-input) (->verdict true :msg nil)
       ;; missing input
-      (clj-and empty-input (not-empty states)) {:match false, :msg (error :missing input states)}
+      (clj-and empty-input (not-empty states)) (->verdict false (error :missing input states))
       :else nil))); continue
 
 (defn- step
   [machine input states]
-  (let [results (mapv #(judge % (first input)) states)
+  (let [results (into [] (comp (map :pred) (map #(judge % (first input)))) states)
         matches (keep-indexed #(when (holds? (get results %1)) %2) states)]
     (next-states matches (:nodes machine))))
 
@@ -199,7 +205,7 @@
   (if-let [todo (not-empty (step machine input states))]
     (if-let [result (stop? todo input)] result
       (recur machine (rest input) todo))
-    (error :mismatch input states)))
+    (->verdict false (error :mismatch input states))))
     ;{:match false, :msg (str "nothing expected, instead got: " input)}))
 
 (defn exec
@@ -212,8 +218,8 @@
                             (:nodes machine)))]
     (traverse machine input starts)))
 
-(def foo (cat (rep* string?) list? map?))
-(exec foo '("hello" (a b) "world"))
+(def foo (cat (rep* string?) (and list? vector?) map?))
+(exec foo '("hello" (1 2) "world"))
 
 ;; (defn- ->viewer
 ;;   [coll]
