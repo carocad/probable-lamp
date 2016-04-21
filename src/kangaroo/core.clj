@@ -9,14 +9,22 @@
 (defonce ^:private id-counter (atom 0))
 (defn- mk-id [] (swap! id-counter inc))
 
+(defn- pretty-demunge
+  [fn-object]
+  (let [dem-fn (demunge (str fn-object))
+        pretty (second (re-find #"(.*?\/.*?)[\-\-|@].*" dem-fn))]
+    (if pretty pretty dem-fn)))
+
 (comment the drill goes like this\:
   we convert everything to an NFA\; those are composed of nodes, each one with
-  predicate to check an input against. we then connect those NFAs such that
+  a predicate to check an input against. we then connect those NFAs such that
   they form a single one. Nested NFAs are possible, thus checking if they match
   an input is conditional with the kind of object that we are checking against.
   Nested NFAs return a verdict object to avoid rechecking the input to build up
-  an error message.
+  an error message. we rely on an extensive use of polymorphism.
   Peace !)
+
+;; =============================PROTOCOLS ===================================;;
 
 (defprotocol NfaPlugable "protocol definition required to convert a certain
   type into an NFA"
@@ -34,14 +42,11 @@
 (defprotocol Mechanic "protocol for patching up nodes with dangling out*"
   (connect [node id] "set a dangling out* in node to id"))
 
-;; FIXME I don't do a lot yet
-;; a verdict of comparing an input against an object rule(s)
-(defrecord verdict  [ok? msg])
+;; ===================== RECORDS & POLYMORPHISM =============================;;
 
-(extend-protocol Statement
-  java.lang.Boolean
-  (holds? [object] object)
-  verdict
+;; a verdict of comparing an input against an object rule(s)
+(defrecord verdict  [ok? msg]
+  Statement
   (holds? [object] (:ok? object)))
 
 (declare exec)
@@ -50,8 +55,17 @@
 (defrecord nfa [fid nodes]
   NfaPlugable
   (->automat [object] object)
-  Judment ;FIXME implement the whole NFA checking process here
+  Judment
   (judge [object input] (exec object input)))
+
+;; a NonDeterministic Finite Automat with first node id fid and an integer
+;; hash-map of nodes. Contrary to nfa, nfa-and compares a single input against
+;; all nodes
+(defrecord nfa-and [fid nodes]
+  NfaPlugable
+  (->automat [object] object)
+  Judment
+  (judge [object input] (exec object (repeat (count (:nodes object)) input))))
 
 ;; an NFA state with (possible) eps transitions, a predicate to compare input against,
 ;; and two possible output states
@@ -79,6 +93,12 @@
                              (when-let [arrow (:out1 anode)]
                                (peep (get nodes arrow) nodes)))))
 
+;; ================= POLYMORPHISM CLOJURE TYPES =============================;;
+
+(extend-type java.lang.Boolean
+  Statement
+  (holds? [object] object))
+
 (extend-type java.lang.Object
   NfaPlugable
   (->automat [object] (->automat (map->node {:id (mk-id) :pred #(= % object) :name (str object)}))))
@@ -87,18 +107,12 @@
   Judment
   (judge [object input] (object input))
   NfaPlugable
-  (->automat [object] (->automat (map->node {:id (mk-id) :pred object :name (demunge (str object))}))))
+  (->automat [object] (->automat (map->node {:id (mk-id) :pred object :name (pretty-demunge object)}))))
+
+;; ========================= IMPLEMENTATION =================================;;
 
 ;;  SINGLETON object
-(defonce ^:const ^:private END (map->node {:id 0 :name "END" :pred (fn [input] false)}))
-
-;; (defn- name-it
-;;   "given a checker function and a state type return the unmangled function name"
-;;   [checker stype]
-;;   (cond (= stype END) "END"
-;;         (nil? checker) nil
-;;         :else (string/replace (second (re-find #"^.+\$(.+)\@.+$" (str checker)))
-;;                               #"\_QMARK\_" "?")))
+(def ^:private END (map->node {:id 0 :name "END" :pred (fn [input] false)}))
 
 (defn cat
   "concatenate two or more objects"
@@ -107,7 +121,7 @@
    (let [auto1 (->automat object)
          auto2 (->automat object2)
          new-states (apply merge (map connect (vals (:nodes auto1))
-                                        (repeat (:fid auto2))))]
+                                      (repeat (:fid auto2))))]
                 (assoc auto1 :nodes (merge new-states (:nodes auto2)))))
   ([object object2 & more-objects]
    (reduce cat (cat object object2) more-objects)))
@@ -149,10 +163,17 @@
                                              (map connect (vals (:nodes auto))
                                                           (repeat (:id split))))})))
 
-(defn and ;; implemented as an NFA inside the NFA under construction
+(defn and ;; implemented as an NFA-and inside a node
   [object object2 & more]
-  (let [machine (reduce cat (cat object object2) more)
-        nest    (->node (mk-id) "FIXME" machine nil)]
+  (let [machine  (reduce cat (cat object object2) more)
+        mach-and (map->nfa-and {:fid (:fid machine) :nodes (:nodes machine)})
+        nest     (->node (mk-id) nil mach-and nil)]
+    (map->nfa {:fid (:id nest) :nodes (int-map (:id nest) nest)})))
+
+(defn subex ;; implemented as an NFA inside a node
+  [object]
+  (let [machine  (->automat object)
+        nest     (->node (mk-id) nil machine nil)]
     (map->nfa {:fid (:id nest) :nodes (int-map (:id nest) nest)})))
 
 (defn- next-states
@@ -162,51 +183,50 @@
   (let [all-out  (map #(get nodes (:out %)) states)
         literals (filter :pred all-out)
         splits   (remove :pred all-out)]
-    (distinct (concat literals
-                      (sequence (comp (map peep) (mapcat vals))
-                                splits (repeat nodes))))))
+    (distinct (concat literals (sequence (comp (map peep) (mapcat vals))
+                                         splits (repeat nodes))))))
 
 (defn- error
   "returns a string with the error message of an unsucessfull match"
   [error-type input states]
   (condp = error-type
     :extra (str "too many elements: " (str input))
-    :missing (str "missing elements: \n Expected any of "
+    :missing (str "missing elements: Expected any of "
                   (string/join ", " (map :name states)))
     :mismatch (str "Expected any of: " (string/join ", " (map :name states))
-                   "; instead got: " (str input))))
-
-(defn- end? [state] (= END state))
+                   "\n\tinstead got: " (str input))))
 
 (defn- stop?
   [states input]
-  (let [end-found   (some end? states)
+  (let [end-found   (some #(= % END) states)
         empty-input (empty? input)]
     (cond
       ;; too much input, not enough states
       (clj-and end-found (not empty-input)) (->verdict false (error :extra input states))
       ;; success !
-      (clj-and end-found empty-input) (->verdict true :msg nil)
+      (clj-and end-found empty-input) (->verdict true nil)
       ;; missing input
       (clj-and empty-input (not-empty states)) (->verdict false (error :missing input states))
       :else nil))); continue
 
-(defn- step
-  [machine input states]
-  (let [results (into [] (comp (map :pred) (map #(judge % (first input)))) states)
-        matches (keep-indexed #(when (holds? (get results %1)) %2) states)]
-    (next-states matches (:nodes machine))))
+(def ^:private ^:const verdict? #(instance? kangaroo.core.verdict %))
 
 (defn- traverse
   "traverse the state machine step by step checking if the input given fulfills
   the any of the current sequence of states"
   [machine input states]
-  ;(Thread/sleep 10000)
-  (if-let [todo (not-empty (step machine input states))]
-    (if-let [result (stop? todo input)] result
-      (recur machine (rest input) todo))
-    (->verdict false (error :mismatch input states))))
-    ;{:match false, :msg (str "nothing expected, instead got: " input)}))
+  (let [results (into [] (comp (map :pred) (map #(judge % (first input)))) states)
+        matches (keep-indexed #(when (holds? (get results %1)) %2) states)
+        todo    (next-states matches (:nodes machine))
+        halt    (stop? todo (rest input))]
+    ;(Thread/sleep 10000)
+    (cond
+      (clj-and (not-empty todo) (not halt)) (recur machine (rest input) todo)
+       halt halt
+      :failure (if-let [nfs (seq (filter verdict? results))]
+                 (update (->verdict false (error :mismatch input states))
+                         :msg str "\n" (string/join "\n" (map :msg nfs)))
+                 (->verdict false (error :mismatch input states))))))
 
 (defn exec
   "compares the provided regular expression to the given input. returns a hash-map
@@ -218,8 +238,16 @@
                             (:nodes machine)))]
     (traverse machine input starts)))
 
-(def foo (cat (rep* string?) (and list? vector?) map?))
-(exec foo '("hello" (1 2) "world"))
+;; (def foo (cat (rep* "hello") list? "world"))
+;; (println (:msg (exec foo '("hello" (1 2) "world"))))
+(def foo (cat (and list? (subex (cat 1 3))) string?))
+(println (:msg (exec foo '((1 2) "hello"))))
+
+;; (type (delay true?))
+;; (deref (delay 2))
+;; (let [a (delay 2)]
+;;   (deref a)
+;;   a)
 
 ;; (defn- ->viewer
 ;;   [coll]
@@ -229,3 +257,4 @@
 ;;            :else %)     coll))
 
 ;; (->viewer (cat foo END))
+
