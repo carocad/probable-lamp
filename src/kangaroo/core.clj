@@ -45,9 +45,9 @@
 ;; ===================== RECORDS & POLYMORPHISM =============================;;
 
 ;; a verdict of comparing an input against an object rule(s)
-(defrecord verdict  [ok? msg]
+(defrecord verdict  [match info]
   Statement
-  (holds? [object] (:ok? object)))
+  (holds? [object] (:match object)))
 
 (declare exec)
 ;; a NonDeterministic Finite Automat with first node id fid and an integer
@@ -190,11 +190,12 @@
   "returns a string with the error message of an unsucessfull match"
   [error-type input states]
   (condp = error-type
-    :extra (str "too many elements: " (str input))
-    :missing (str "missing elements: Expected any of "
-                  (string/join ", " (map :name states)))
-    :mismatch (str "Expected any of: " (string/join ", " (map :name states))
-                   "\n\tinstead got: " (str input))))
+    :extra {:type :extra-input :input input}; (str "too many elements: " (str input))
+    :missing {:type :missing-input :states states}; (str "missing elements: Expected any of "
+                  ;(string/join ", " (map :name states)))
+    :mismatch {:type :mismatch :input input :states states}; (str "Expected any of: " (string/join ", " (map :name states))
+                   ;"\n\tinstead got: " (str input))))
+    ))
 
 (defn- stop?
   [states input]
@@ -202,11 +203,11 @@
         empty-input (empty? input)]
     (cond
       ;; too much input, not enough states
-      (clj-and end-found (not empty-input)) (->verdict false (error :extra input states))
+      (clj-and end-found (not empty-input)) (->verdict false {:type :extra-input :input input})
       ;; success !
       (clj-and end-found empty-input) (->verdict true nil)
       ;; missing input
-      (clj-and empty-input (not-empty states)) (->verdict false (error :missing input states))
+      (clj-and empty-input (not-empty states)) (->verdict false {:type :missing-input :states states})
       :else nil))); continue
 
 (def ^:private ^:const verdict? #(instance? kangaroo.core.verdict %))
@@ -224,13 +225,14 @@
       (clj-and (not-empty todo) (not halt)) (recur machine (rest input) todo)
        halt halt
       :failure (if-let [nfs (seq (filter verdict? results))]
-                 (update (->verdict false (error :mismatch input states))
-                         :msg str "\n" (string/join "\n" (map :msg nfs)))
+                 (assoc-in (->verdict false {:type :mismatch :input input :states (filter #(fn? (:pred %))
+                                                                                          states)})
+                         [:info :nested] nfs)
                  (->verdict false (error :mismatch input states))))))
 
 (defn exec
   "compares the provided regular expression to the given input. returns a hash-map
-  with :match and :msg as the verdict of the match and an error message if the match
+  with :match and :info as the verdict of the match and an error message if the match
   was not sucessfull."
   [auto input]
   (let [machine (cat auto END)
@@ -241,7 +243,9 @@
 ;; (def foo (cat (rep* "hello") list? "world"))
 ;; (println (:msg (exec foo '("hello" (1 2) "world"))))
 (def foo (cat (and list? (subex (cat 1 3))) string?))
-(println (:msg (exec foo '((1 2) "hello"))))
+;(println
+  (:info (exec foo '((1 2) "hello")))
+ ; )
 
 ;; (type (delay true?))
 ;; (deref (delay 2))
@@ -249,12 +253,19 @@
 ;;   (deref a)
 ;;   a)
 
-;; (defn- ->viewer
-;;   [coll]
-;;   (clojure.walk/postwalk
-;;     #(cond (record? %) (into {} %)
-;;            (fn? %)     (str %)
-;;            :else %)     coll))
+(defn- ->viewer
+  [coll]
+  (clojure.walk/postwalk
+    #(cond (record? %) (into {} %)
+           (fn? %)     (str %)
+           :else %)     coll))
+
+(->viewer (exec foo '((1 2) "hello")))
 
 ;; (->viewer (cat foo END))
+
+;(throw
+  (ex-info "The ice cream has melted!"
+       {:causes             #{:fridge-door-open :dangerously-high-temperature}
+        :current-temperature {:value 25 :unit :celsius}});)
 
