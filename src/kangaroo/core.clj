@@ -109,6 +109,10 @@
   NfaPlugable
   (->automat [object] (->automat (map->node {:id (mk-id) :pred object :name (pretty-demunge object)}))))
 
+(extend-type clojure.lang.Delay
+  Judment
+  (judge [object input] (judge @object input)))
+
 ;; ========================= IMPLEMENTATION =================================;;
 
 ;;  SINGLETON object
@@ -197,17 +201,22 @@
                    ;"\n\tinstead got: " (str input))))
     ))
 
+(def one? #(= 1 (count %)))
+
 (defn- stop?
   [states input]
   (let [end-found   (some #(= % END) states)
         empty-input (empty? input)]
     (cond
       ;; too much input, not enough states
-      (clj-and end-found (not empty-input)) (->verdict false {:type :extra-input :input input})
+      (clj-and end-found (one? states) (not empty-input))
+        (->verdict false {:type :extra-input :input input})
       ;; success !
-      (clj-and end-found empty-input) (->verdict true nil)
+      (clj-and end-found empty-input)
+        (->verdict true nil)
       ;; missing input
-      (clj-and empty-input (not-empty states)) (->verdict false {:type :missing-input :states states})
+      (clj-and empty-input (not-empty states))
+        (->verdict false {:type :missing-input :states states})
       :else nil))); continue
 
 (def ^:private ^:const verdict? #(instance? kangaroo.core.verdict %))
@@ -220,14 +229,16 @@
         matches (keep-indexed #(when (holds? (get results %1)) %2) states)
         todo    (next-states matches (:nodes machine))
         halt    (stop? todo (rest input))]
-    ;(Thread/sleep 10000)
+;;     (Thread/sleep 10000)
     (cond
       (clj-and (not-empty todo) (not halt)) (recur machine (rest input) todo)
        halt halt
       :failure (if-let [nfs (seq (filter verdict? results))]
-                 (assoc-in (->verdict false {:type :mismatch :input input :states (filter #(fn? (:pred %))
-                                                                                          states)})
-                         [:info :nested] nfs)
+                 (assoc-in (->verdict false
+                                      {:type :mismatch
+                                       :input input
+                                       :states (filter #(fn? (:pred %)) states)})
+                           [:info :nested] nfs)
                  (->verdict false (error :mismatch input states))))))
 
 (defn exec
@@ -242,10 +253,8 @@
 
 ;; (def foo (cat (rep* "hello") list? "world"))
 ;; (println (:msg (exec foo '("hello" (1 2) "world"))))
-(def foo (cat (and list? (subex (cat 1 3))) string?))
-;(println
-  (:info (exec foo '((1 2) "hello")))
- ; )
+;; (def foo (cat (and list? (subex (cat 1 3))) string?))
+;; (:info (exec foo '((1 2) "hello")))
 
 ;; (type (delay true?))
 ;; (deref (delay 2))
@@ -260,12 +269,35 @@
            (fn? %)     (str %)
            :else %)     coll))
 
-(->viewer (exec foo '((1 2) "hello")))
-
+;; (->viewer (exec foo '((1 2) "hello")))
 ;; (->viewer (cat foo END))
 
-;(throw
-  (ex-info "The ice cream has melted!"
-       {:causes             #{:fridge-door-open :dangerously-high-temperature}
-        :current-temperature {:value 25 :unit :celsius}});)
+(defn expr [input] (or (sequential? input)
+                       (string? input)
+                       (symbol? input)
+                       (number? input)
+                       (map? input)
+                       (set? input)))
+
+(defn vec-form [sub-form]
+  (and vector? (subex sub-form)))
+
+(declare binding-form)
+
+(def binding-vec
+  (vec-form (cat (rep* (delay binding-form))
+                 (opt (cat '& symbol?))
+                 (opt (cat :as symbol?)))))
+
+(def binding-form
+  (alt symbol? binding-vec))
+
+(def binding-pair
+  (cat binding-form expr))
+
+;; (->viewer (vec-form (rep* binding-pair)))
+
+(->viewer (exec (vec-form (rep* binding-pair))
+                '([a 23
+                   b #{}])))
 
