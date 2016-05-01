@@ -88,10 +88,11 @@
                              (when-let [arrow (:out1 anode)]
                                (peep (get nodes arrow) nodes)))))
 
-;; a verdict of comparing an input against an object rule(s)
-(defrecord verdict  [match info]
+;; an error with the information  of the states, input and kind of error that
+;; happened
+(defrecord error [type input states subex]
   Statement
-  (holds? [object] (:match object)))
+  (holds? [object] false));; any error instance is a prove of failure
 
 ;; ================= POLYMORPHISM CLOJURE TYPES =============================;;
 
@@ -198,7 +199,7 @@
                                          splits (repeat nodes))))))
 
 (def ^:private one?     #(= 1 (count %)))
-(def ^:private verdict? #(instance? kangaroo.core.verdict %))
+(def ^:private error? #(instance? kangaroo.core.error %))
 
 (defn- stop?
   "stop traversing the NFA if a sucessfull match was found or if we ran out
@@ -209,26 +210,25 @@
     (cond
       ;; too much input, not enough states
       (clj-and end-found (one? states) (not empty-input))
-        (->verdict false {:type :extra-input :input input})
+        (map->error {:type :extra-input :input input})
       ;; success !
-      (clj-and end-found empty-input)
-        (->verdict true nil)
+      (clj-and end-found empty-input) true
       ;; missing input
       (clj-and empty-input (not-empty states))
-        (->verdict false {:type :missing-input :states states})
+        (map->error {:type :missing-input :states states})
       :else nil))); continue
 
 (defn- mismatch-error
   "returns a verdict object with error information"
   [input results states]
-  ;; BUG: if a state is a delay, its result should be separated from states
-  (let [nfs    (filter verdict? results)
-        fails  (filter #(fn? (:pred %)) states)]
+  ;; FIXME: if a state is a delay, its result should be separated from states
+  (let [sub-nfs (filter error? results)
+        fails   (filter #(fn? (:pred %)) states)]
     (cond
-      (clj-and (seq nfs) (seq fails)) (->verdict false {:type :mismatch
-                                        :input input :states fails :nested nfs})
-      (seq nfs) (->verdict false {:type :mismatch :input input :nested nfs})
-      :else (->verdict false {:type :mismatch :input input :states states}))))
+      (clj-and (seq sub-nfs) (seq fails)) (map->error {:type :mismatch
+                                        :input input :states fails :subex sub-nfs})
+      (seq sub-nfs) (map->error {:type :mismatch :input input :subex sub-nfs})
+      :else (map->error {:type :mismatch :input input :states states}))))
 
 (defn- traverse
   "traverse the state machine step by step checking if the input given fulfills
@@ -245,9 +245,9 @@
         (mismatch-error input results states)))))
 
 (defn exec
-  "compares the provided regular expression to the given input. returns a hash-map
-  with :match (true/false) and :info with a verdict object containing all
-  necessary error information or nil if a match occurred"
+  "compares the provided regular expression to the given input. returns true if
+  the input matches the provided rules, or an error object with the state at
+  which the input failed the rules"
   [auto input]
   (let [machine (cat auto END)
         starts  (vals (peep (get-in machine [:nodes (:fid machine)])
@@ -256,13 +256,6 @@
 
 ;; (def foo (cat (rep* "hello") list? "world"))
 ;; (def foo (cat (and list? (subex (cat 1 3))) string?))
-
-(defn- ->viewer
-  [coll]
-  (clojure.walk/postwalk
-    #(cond (record? %) (into {} %)
-           (fn? %)     (str %)
-           :else %)     coll))
 
 ;; (->viewer (exec foo '((1 2) "hello")))
 ;; (->viewer (cat foo END))
