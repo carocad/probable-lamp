@@ -98,15 +98,19 @@
   Statement
   (holds? [object] object))
 
-(extend-type clojure.lang.Delay
-  Judment
-  (judge [object input] (judge @object input)))
-
 (extend-type clojure.lang.IFn ;FIXME: replace this with clojure.lang.Fn, and delete the special cases
   Judment
   (judge [object input] (object input))
   NfaPlugable
   (->automat [object] (->automat (map->node {:id (mk-id) :pred object :name (pretty-demunge object)}))))
+
+(extend-type clojure.lang.Delay
+  Judment
+  (judge [object input] (if (instance? kangaroo.core.nfa @object)
+                          (judge @object (list input)); wrap the input in a list to make it look as if passed directly
+                          (judge @object input)))
+  NfaPlugable
+  (->automat [object] (->automat (map->node {:id (mk-id) :pred object})))); :name (pretty-demunge object), get the name at runtime !
 
 (extend-type java.lang.Object
   NfaPlugable
@@ -179,6 +183,7 @@
                                                           (repeat (:id split))))})))
 
 (defn and ;; implemented as an NFA-and inside a node
+  "use this if the input should satisfy two or more conditions"
   [object object2 & more]
   (let [machine  (reduce cat (cat object object2) more)
         mach-and (map->nfa-and {:fid (:fid machine) :nodes (:nodes machine)})
@@ -186,6 +191,8 @@
     (map->nfa {:fid (:id nest) :nodes (hash-map (:id nest) nest)})))
 
 (defn subex ;; implemented as an NFA inside a node
+  "subexpression (or subpattern) matching. The elements inside the input
+  should match the object rules"
   [object]
   (let [machine  (->automat object)
         nest     (->node (mk-id) nil machine nil)]
@@ -205,6 +212,8 @@
 (def ^:private verdict? #(instance? kangaroo.core.verdict %))
 
 (defn- stop?
+  "stop traversing the NFA if a sucessfull match was found or if we ran out
+  of input/states"
   [states input]
   (let [end-found   (some #(= % END) states)
         empty-input (empty? input)]
@@ -220,20 +229,12 @@
         (->verdict false {:type :missing-input :states states})
       :else nil))); continue
 
-;; (defn- mismatch-error
-;;   [input results states]
-;;   (let [nfs   (filter verdict? results)
-;;         fails (filter #(fn? (:pred %)) states)]
-;;     (cond-> (->verdict false {:type :mismatch :input input})
-;;       (seq nfs)   (assoc-in [:info :nested] nfs)
-;;       (seq fails) (assoc-in [:info :states] fails)
-;;       (not (and (seq nfs) (seq fails))) (assoc-in [:info :states] states))))
-
 (defn- mismatch-error
+  "returns a verdict object with error information"
   [input results states]
+  ;; BUG: if a state is a delay, its result should be separated from states
   (let [nfs    (filter verdict? results)
-        fails  (filter #(fn? (:pred %)) states)
-        delays (filter delay? states)]
+        fails  (filter #(fn? (:pred %)) states)]
     (cond
       (clj-and (seq nfs) (seq fails)) (->verdict false {:type :mismatch
                                         :input input :states fails :nested nfs})
@@ -242,7 +243,7 @@
 
 (defn- traverse
   "traverse the state machine step by step checking if the input given fulfills
-  the any of the current sequence of states"
+  any of the current sequence of states"
   [machine input states]
   (let [results (into [] (comp (map :pred) (map #(judge % (first input)))) states)
         matches (keep-indexed #(when (holds? (get results %1)) %2) states)
@@ -256,8 +257,8 @@
 
 (defn exec
   "compares the provided regular expression to the given input. returns a hash-map
-  with :match and :info as the verdict of the match and an error message if the match
-  was not sucessfull."
+  with :match (true/false) and :info with a verdict object containing all
+  necessary error information or nil if a match occurred"
   [auto input]
   (let [machine (cat auto END)
         starts  (vals (peep (get-in machine [:nodes (:fid machine)])
