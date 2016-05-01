@@ -15,13 +15,13 @@
     (if pretty pretty dem-fn)))
 
 (comment the drill goes like this\:
-  we convert everything to an NFA\; those are composed of nodes, each one with
+  we convert everything to an NFA\; those are composed of nodes, each one has
   a predicate to check an input against. we then connect those NFAs such that
   they form a single one. Nested NFAs are possible, thus checking if they match
   an input is conditional with the kind of object that we are checking against.
   Nested NFAs return a verdict object to avoid rechecking the input to build up
   an error message. we rely on an extensive use of polymorphism.
-  Peace !)
+  Peace !!)
 
 ;; =============================PROTOCOLS ===================================;;
 
@@ -35,7 +35,7 @@
 (defprotocol Statement
   (holds? [object] "check the result of a judgment"))
 
-(defprotocol Bypasser "protocol to get the output of (split-)node"
+(defprotocol Bypasser "protocol to get the output of a (split-)node"
   (peep [anode nodes] "return a hash-map of {id node} nodes that anode leads to"))
 
 (defprotocol Mechanic "protocol for patching up nodes with dangling out*"
@@ -43,12 +43,8 @@
 
 ;; ===================== RECORDS & POLYMORPHISM =============================;;
 
-;; a verdict of comparing an input against an object rule(s)
-(defrecord verdict  [match info]
-  Statement
-  (holds? [object] (:match object)))
+(declare exec); function to run an NFA rules against an input sequence, see below
 
-(declare exec)
 ;; a NonDeterministic Finite Automat with first node id fid and an integer
 ;; hash-map of nodes
 (defrecord nfa [fid nodes]
@@ -92,13 +88,18 @@
                              (when-let [arrow (:out1 anode)]
                                (peep (get nodes arrow) nodes)))))
 
+;; a verdict of comparing an input against an object rule(s)
+(defrecord verdict  [match info]
+  Statement
+  (holds? [object] (:match object)))
+
 ;; ================= POLYMORPHISM CLOJURE TYPES =============================;;
 
 (extend-type java.lang.Boolean
   Statement
   (holds? [object] object))
 
-(extend-type clojure.lang.IFn ;FIXME: replace this with clojure.lang.Fn, and delete the special cases
+(extend-type clojure.lang.Fn
   Judment
   (judge [object input] (object input))
   NfaPlugable
@@ -112,25 +113,13 @@
   NfaPlugable
   (->automat [object] (->automat (map->node {:id (mk-id) :pred object})))); :name (pretty-demunge object), get the name at runtime !
 
-(extend-type java.lang.Object
-  NfaPlugable
-  (->automat [object] (->automat (map->node {:id (mk-id) :pred #(= % object) :name (str object)}))))
-
-;; special cases
-
-;; For some reason, symbol is an instance of IFn
-(extend-type clojure.lang.Symbol
-  NfaPlugable
-  (->automat [object] (->automat (map->node {:id (mk-id) :pred #(= % object) :name (str object)}))))
-
-;; wrap the keyword in an equal comparison to avoid calling it as a function
-(extend-type clojure.lang.Keyword
+(extend-type java.lang.Object; anything that is not a function is check for equality
   NfaPlugable
   (->automat [object] (->automat (map->node {:id (mk-id) :pred #(= % object) :name (str object)}))))
 
 ;; ========================= IMPLEMENTATION =================================;;
 
-;;  SINGLETON object
+;;  SINGLETON object, END of any nfa
 (def ^:private END (map->node {:id 0 :name "END" :pred (fn [input] false)}))
 
 (defn cat
