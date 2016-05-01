@@ -37,11 +37,17 @@
 (def binding-pair "a binding pair, only useful in let expressions (a.f.a.i.k)"
   (seql/cat binding-form expression))
 
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(seql/exec binding-map
-           '({[a b] :a d :d}))
+(defn- ->viewer
+  [coll]
+  (clojure.walk/postwalk
+    #(cond (record? %) (into {} %)
+           (fn? %)     (str %)
+           :else %)     coll))
+
+(->viewer (seql/exec binding-map
+                     '({"a" :a "d" :d})))
 
 (seql/exec (map-pair (delay binding-form) expression)
            '([a :b]))
