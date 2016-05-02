@@ -1,9 +1,12 @@
 (ns kangaroo.core
+  "implementation of Thompson construction algorithm with a few tweaks,
+  namely: replaced char comparison by predicates, introduction of 'and'
+  and 'subex' expressions as nested NFA, and use of delayed expressions
+  for recursive definitions"
   (:refer-clojure :rename {cat clj-cat, and clj-and})
   (:require [clojure.string :as string]
-            [clojure.main :refer [demunge]]))
-
-;TODO change name to barbara !!
+            [clojure.main :refer [demunge]]
+            [clojure.walk :refer [postwalk]]))
 
 (defonce ^:private id-counter (atom 0))
 (defn- mk-id [] (swap! id-counter inc))
@@ -15,13 +18,17 @@
     (if pretty pretty dem-fn)))
 
 (comment the drill goes like this\:
-  we convert everything to an NFA\; those are composed of nodes, each one has
+  we convert everything to an NFA (Non-Deterministic Finite State
+  Automat - with eps transitions)\; those are composed of nodes, each one has
   a predicate to check an input against. we then connect those NFAs such that
   they form a single one. Nested NFAs are possible, thus checking if they match
   an input is conditional with the kind of object that we are checking against.
-  Nested NFAs return a verdict object to avoid rechecking the input to build up
-  an error message. we rely on an extensive use of polymorphism.
+  Nested NFAs return an error object when they fail to avoid rechecking the input
+  to build up an error message. we rely on an extensive use of polymorphism.
   Peace !!)
+
+;; NOTES: both Delays and NFA-and require mocking the input therefore an
+;;        correction process is necessary to avoid reporting bad input
 
 ;; =============================PROTOCOLS ===================================;;
 
@@ -59,8 +66,14 @@
 (defrecord nfa-and [fid nodes]
   NfaPlugable
   (->automat [object] object)
-  Judment
-  (judge [object input] (exec object (repeat (count (:nodes object)) input))))
+  Judment;;FIXME: fixing the input like that is not perfect, but it should do for the moment
+  (judge [object input] (let [rinput (repeat (count (:nodes object)) input)
+                              res    (exec object rinput)
+                              correct (fn [err] (if (some->> (:input err) (every? #(= input %)))
+                                                  (assoc err :input input)
+                                                  err))]
+                          (if (true? res) res
+                            (postwalk correct res)))))
 
 ;; an NFA state with (possible) eps transitions, a predicate to compare input against,
 ;; and two possible output states
@@ -107,10 +120,17 @@
   (->automat [object] (->automat (map->node {:id (mk-id) :pred object :name (pretty-demunge object)}))))
 
 (extend-type clojure.lang.Delay
-  Judment
-  (judge [object input] (if (instance? kangaroo.core.nfa @object)
-                          (judge @object (list input)); wrap the input in a list to make it look as if passed directly
-                          (judge @object input)))
+  Judment;;FIXME: wrappin/unwrapping the input like that is not perfect, but it should do for the moment
+  (judge [object input] (let [rinput (repeat (count (:nodes object)) input)
+                              res    (if (instance? kangaroo.core.nfa @object)
+                                       (judge @object (list input)); wrap the input in a list to make it look as if passed directly
+                                       (judge @object input))
+                              correct (fn [err] (if (some->> (:input err) (= (list input)))
+                                                  (assoc err :input input);;unwrap the input
+                                                  err))]
+                          (if (true? res) res
+                            (postwalk correct res))))
+
   NfaPlugable
   (->automat [object] (->automat (map->node {:id (mk-id) :pred object})))); :name (pretty-demunge object), get the name at runtime !
 
@@ -121,7 +141,7 @@
 ;; ========================= IMPLEMENTATION =================================;;
 
 ;;  SINGLETON object, END of any nfa
-(def ^:private END (map->node {:id 0 :name "END" :pred (fn [input] false)}))
+(def END (map->node {:id 0 :name "END" :pred (fn [input] false)}))
 
 (defn cat
   "concatenate two or more objects"
@@ -198,7 +218,6 @@
     (distinct (concat literals (sequence (comp (map peep) (mapcat vals))
                                          splits (repeat nodes))))))
 
-(def ^:private one?     #(= 1 (count %)))
 (def ^:private error? #(instance? kangaroo.core.error %))
 
 (defn- stop?
@@ -209,7 +228,7 @@
         empty-input (empty? input)]
     (cond
       ;; too much input, not enough states
-      (clj-and end-found (one? states) (not empty-input))
+      (clj-and end-found (= 1 (count states)) (not empty-input))
         (map->error {:type :extra-input :input input})
       ;; success !
       (clj-and end-found empty-input) true
@@ -253,9 +272,3 @@
         starts  (vals (peep (get-in machine [:nodes (:fid machine)])
                             (:nodes machine)))]
     (traverse machine input starts)))
-
-;; (def foo (cat (rep* "hello") list? "world"))
-;; (def foo (cat (and list? (subex (cat 1 3))) string?))
-
-;; (->viewer (exec foo '((1 2) "hello")))
-;; (->viewer (cat foo END))
