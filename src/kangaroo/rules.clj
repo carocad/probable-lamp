@@ -1,8 +1,8 @@
-(ns kangaroo.basics
+(ns kangaroo.rules
   (:require [kangaroo.core :as seql]))
 
 ; a single 'expresion' is for example 'a, or '() but 'a 'b is not because they
-; are two elements. Nevertheless '[a b] is a form because it is a single vector
+; are two elements. Nevertheless '[a b] is ok because it is a single vector
 ; which contains two values. Other fundamental types work the same
 (defn expression [input] (or (sequential? input) (string? input)
                              (symbol? input) (number? input)
