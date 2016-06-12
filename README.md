@@ -20,7 +20,10 @@ would match all sequences that contains either: one or more string, one list or 
 ```
 probable-lamp uses the name of the provided function to feedback a message with the expected input, plus a boolean with the final matching state.
 
-**NOTE:** The implementation is extremely simple but very flexible such that you could implement a particular regular language on top of it. Regular expressions can be seen simply as an specific case of regular languages. Thus it could be implemented on top of this library.
+**NOTE:** 
+- The implementation is extremely simple but very flexible such that you could implement a particular regular language on top of it. Regular expressions can be seen simply as an specific case of regular languages. Thus it could be implemented on top of this library.
+- Proof of concept !! Don't use this in production
+
 
 ## License
 
